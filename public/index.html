@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Mini Job Board (MERN)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
+  <!-- React (CDN) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+</head>
+
+<body>
+  <h1>Mini Job Board</h1>
+  <p class="muted">View and post internship opportunities (newest first).</p>
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useState } = React;
+
+    const escapeHtml = (s) => String(s)
+      .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;").replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+    function App() {
+      const [list, setList] = useState([]);
+      const [form, setForm] = useState({ title: "", company: "", role: "" });
+      const [msg, setMsg] = useState({ text: "", kind: "" });
+
+      const load = async () => {
+        const res = await fetch("/api/internships");
+        const data = await res.json();
+        setList(data);
+      };
+      useEffect(() => { load(); }, []);
+
+      const onChange = (e) => {
+        setMsg({text:"", kind:""});
+        setForm({ ...form, [e.target.name]: e.target.value });
+      };
+
+      const submit = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch("/api/internships", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+          });
+          if (!res.ok) {
+            const j = await res.json().catch(()=>({error:"Failed"}));
+            throw new Error(j.error || "Failed");
+          }
+          setForm({ title: "", company: "", role: "" });
+          setMsg({ text: "Posted!", kind: "ok" });
+          await load();
+        } catch (err) {
+          setMsg({ text: err.message || "Error", kind: "err" });
+        }
+      };
+
+      return (
+        <div>
+          <form onSubmit={submit}>
+            <input name="title" placeholder="Title (e.g., Software Dev Intern)" value={form.title} onChange={onChange} required />
+            <input name="company" placeholder="Company" value={form.company} onChange={onChange} required />
+            <input className="span-2" name="role" placeholder="Role (e.g., Backend / Full-stack)" value={form.role} onChange={onChange} required />
+            <div className="span-2">
+              <button type="submit">Post Internship</button>
+              <span className={`msg ${msg.kind}`}>{msg.text}</span>
+            </div>
+          </form>
+
+          <div className="list">
+            {list.map(item => (
+              <div key={item._id} className="card">
+                <div className="title">{escapeHtml(item.title)}</div>
+                <div className="meta">{escapeHtml(item.company)} • {escapeHtml(item.role)}</div>
+                <div className="time">Posted: {new Date(item.createdAt).toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+
+</html>
