@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sign up</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f6f7fb;
+      margin: 20px;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      padding: 14px;
+      border-radius: 10px;
+      max-width: 420px;
+      margin: auto;
+    }
+
+    form {
+      display: grid;
+      gap: 10px;
+    }
+
+    input,
+    select {
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+
+    button {
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      background: #3b82f6;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .err {
+      color: #b91c1c;
+      background: #fee2e2;
+      padding: 8px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .nav {
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h2>Create account</h2>
+    <div id="e" class="err"></div>
+    <form id="f">
+      <input id="email" type="email" placeholder="Email" required />
+      <input id="pass" type="password" placeholder="Password" required />
+      <select id="role">
+        <option value="employer">Employer (can post)</option>
+        <option value="seeker">Seeker (view only)</option>
+      </select>
+      <button>Sign up</button>
+    </form>
+    <div class="nav">
+      <a href="/login">Login</a> • <a href="/internships">Internships</a>
+    </div>
+  </div>
+
+  <script>
+    const err = document.getElementById('e');
+    document.getElementById('f').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('pass').value;
+      const role = document.getElementById('role').value;
+      const r = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email,
+          password,
+          role
+        })
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        err.textContent = j.error || 'Signup failed';
+        err.style.display = 'block';
+        return;
+      }
+      localStorage.setItem('token', j.token);
+      localStorage.setItem('user', JSON.stringify(j.user));
+      location.href = '/internships';
+    };
+  </script>
+</body>
+
+</html>
