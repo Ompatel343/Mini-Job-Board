@@ -1,17 +1,18 @@
 {
-  "name": "mini-job-board-mern",
-  "version": "1.1.0",
-  "type": "module",
+  "name": "mini-job-board",
+  "version": "1.0.1",
+  "description": "Tiny MERN internship board (2 files, no CDN/Babel)",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "build": "cd client && npm install && npm run build"
+    "start": "node server.js"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "connect-mongo": "^5.1.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "express-session": "^1.18.2",
-    "mongoose": "^8.5.2"
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.18.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   }
 }
