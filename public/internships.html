@@ -1,0 +1,338 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Internships</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f6f7fb;
+      margin: 20px;
+    }
+
+    .wrap {
+      max-width: 900px;
+      margin: auto;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      padding: 14px;
+      border-radius: 10px;
+      margin-bottom: 15px;
+    }
+
+    form {
+      display: grid;
+      gap: 10px;
+    }
+
+    input {
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+
+    button {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      background: #3b82f6;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .btn-dark {
+      background: #111827;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 12px;
+    }
+
+    .err {
+      color: #b91c1c;
+      background: #fee2e2;
+      padding: 8px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .item {
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .pill {
+      font-size: 12px;
+      border: 1px solid #ddd;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: #555;
+    }
+
+    .small {
+      font-size: 12px;
+    }
+
+    .app-list {
+      border-left: 3px solid #e5e7eb;
+      margin-top: 8px;
+      padding-left: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="row" style="justify-content:space-between">
+      <h2>Internships</h2>
+      <div>
+        <a href="/signup">Sign up</a> · <a href="/login">Login</a>
+        <button id="logoutBtn" class="btn-dark" style="display:none;margin-left:10px">Logout</button>
+      </div>
+    </div>
+    <div id="who" class="muted">Not logged in</div>
+
+    <div id="err" class="err"></div>
+
+    <!-- Employer-only post form -->
+    <div id="postCard" class="card" style="display:none">
+      <b>Post an internship</b>
+      <form id="jobForm">
+        <div class="row">
+          <input id="title" placeholder="Title" required />
+          <input id="company" placeholder="Company" required />
+          <input id="role" placeholder="Role" required />
+          <button>Post</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <b>Available internships (newest first)</b>
+      <div id="list" class="muted">Loading…</div>
+    </div>
+  </div>
+
+  <script>
+    /* ---------- auth & helpers ---------- */
+    const state = {
+      token: localStorage.getItem('token') || '',
+      user: JSON.parse(localStorage.getItem('user') || 'null')
+    };
+    const who = document.getElementById('who'),
+      postCard = document.getElementById('postCard'),
+      err = document.getElementById('err'),
+      logoutBtn = document.getElementById('logoutBtn');
+
+    function api(path, opt = {}) {
+      const h = opt.headers || {};
+      if (state.token) h.Authorization = 'Bearer ' + state.token;
+      return fetch(path, {
+        ...opt,
+        headers: h
+      });
+    }
+
+    function renderAuth() {
+      if (state.user) {
+        who.textContent = `Logged in as ${state.user.email} (${state.user.role})`;
+        postCard.style.display = state.user.role === 'employer' ? 'block' : 'none';
+        logoutBtn.style.display = 'inline-block';
+      } else {
+        who.textContent = 'Not logged in';
+        postCard.style.display = 'none';
+        logoutBtn.style.display = 'none';
+      }
+    }
+
+    function showErr(m) {
+      err.textContent = typeof m === 'string' ? m : JSON.stringify(m);
+      err.style.display = 'block';
+      setTimeout(() => err.style.display = 'none', 4000);
+    }
+
+    function escapeHtml(s) {
+      return (s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      } [c]));
+    }
+    async function parseJsonSafe(res) { // read text first, then try JSON
+      const txt = await res.text();
+      try {
+        return {
+          ok: res.ok,
+          status: res.status,
+          data: txt ? JSON.parse(txt) : (res.ok ? {} : {
+            error: `HTTP ${res.status}`
+          })
+        };
+      } catch {
+        return {
+          ok: res.ok,
+          status: res.status,
+          data: txt ? {
+            error: txt
+          } : {
+            error: `HTTP ${res.status}`
+          }
+        };
+      }
+    }
+
+    /* ---------- jobs list ---------- */
+    async function loadJobs() {
+      try {
+        const headers = state.token ? {
+          'Authorization': 'Bearer ' + state.token
+        } : {};
+        const r = await fetch('/api/internships', {
+          headers
+        });
+        const jr = await parseJsonSafe(r);
+        const d = Array.isArray(jr.data) ? jr.data : [];
+        const list = document.getElementById('list');
+        if (!jr.ok) {
+          list.textContent = 'Failed to load';
+          showErr(jr.data.error || `HTTP ${jr.status}`);
+          return;
+        }
+        if (d.length === 0) {
+          list.textContent = 'No internships yet';
+          return;
+        }
+        list.innerHTML = '';
+        d.forEach(j => {
+          const jid = j._id || j.id; // ✅ robust ID
+          const div = document.createElement('div');
+          div.className = 'item';
+          const created = new Date(j.createdAt || Date.now()).toLocaleString();
+          const poster = j.postedBy?.email ? ` • <span class="small muted">posted by ${escapeHtml(j.postedBy.email)}</span>` : '';
+          const appliedPill = j.applied ? `<span class="pill">Applied</span>` : '';
+          const countPill = `<span class="pill">${j.applicantCount||0} applicants</span>`;
+          const applyBtn = (state.user && state.user.role === 'seeker') ?
+            `<button data-apply="${jid}" ${j.applied?'disabled':''}>${j.applied?'Applied':'Apply'}</button>` :
+            '';
+          const viewBtn = (state.user && state.user.role === 'employer' && j.postedBy && j.postedBy.userId === state.user.id) ?
+            `<button data-view="${jid}" class="btn-dark">View applicants</button>` :
+            '';
+          div.innerHTML = `
+        <div class="row" style="justify-content:space-between;">
+          <div><b>${escapeHtml(j.title)}</b> at ${escapeHtml(j.company)} — ${escapeHtml(j.role)}${poster}</div>
+          <div class="row">${countPill}${appliedPill? ' '+appliedPill:''} ${applyBtn} ${viewBtn}</div>
+        </div>
+        <div class="small muted">${created}</div>
+        <div class="app-list" id="apps-${jid}" style="display:none"></div>
+      `;
+          list.appendChild(div);
+        });
+
+        // wire Apply (seeker)
+        document.querySelectorAll('[data-apply]').forEach(btn => {
+          btn.onclick = async () => {
+            if (!state.user) return showErr('Login as seeker to apply');
+            if (state.user.role !== 'seeker') return showErr('Only seekers can apply');
+            const id = btn.getAttribute('data-apply');
+            // console.log('apply -> id=', id);
+            const res = await api(`/api/internships/${id}/apply`, {
+              method: 'POST'
+            });
+            const jr = await parseJsonSafe(res);
+            if (!jr.ok) {
+              return showErr(jr.data.error || `Failed (${jr.status})`);
+            }
+            loadJobs();
+          };
+        });
+
+        // wire View applicants (posting employer)
+        document.querySelectorAll('[data-view]').forEach(btn => {
+          btn.onclick = async () => {
+            const id = btn.getAttribute('data-view');
+            const panel = document.getElementById(`apps-${id}`);
+            if (panel.style.display === 'block') {
+              panel.style.display = 'none';
+              panel.innerHTML = '';
+              return;
+            }
+            const res = await api(`/api/internships/${id}/applicants`);
+            const jr = await parseJsonSafe(res);
+            if (!jr.ok) {
+              return showErr(jr.data.error || `Failed (${jr.status})`);
+            }
+            const arr = Array.isArray(jr.data) ? jr.data : [];
+            if (arr.length === 0) {
+              panel.innerHTML = '<div class="small muted">No applicants yet</div>';
+              panel.style.display = 'block';
+              return;
+            }
+            panel.innerHTML = arr.map(a => `<div class="small">• ${escapeHtml(a.email)} <span class="muted">(${new Date(a.appliedAt).toLocaleString()})</span></div>`).join('');
+            panel.style.display = 'block';
+          };
+        });
+
+      } catch (e) {
+        document.getElementById('list').textContent = 'Failed to load';
+        showErr(e?.message || 'Unknown error');
+      }
+    }
+
+    /* ---------- post job (employer) ---------- */
+    document.getElementById('jobForm').onsubmit = async (e) => {
+      e.preventDefault();
+      if (!state.user || state.user.role !== 'employer') return showErr('Only employers can post.');
+      const title = document.getElementById('title').value.trim();
+      const company = document.getElementById('company').value.trim();
+      const role = document.getElementById('role').value.trim();
+      const res = await api('/api/internships', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title,
+          company,
+          role
+        })
+      });
+      const jr = await parseJsonSafe(res);
+      if (!jr.ok) {
+        return showErr(jr.data.error || `Failed (${jr.status})`);
+      }
+      e.target.reset();
+      loadJobs();
+    };
+
+    /* ---------- logout ---------- */
+    logoutBtn.onclick = () => {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      state.token = '';
+      state.user = null;
+      renderAuth();
+      loadJobs();
+    };
+
+    /* ---------- init ---------- */
+    renderAuth();
+    loadJobs();
+  </script>
+</body>
+
+</html>
