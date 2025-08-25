@@ -1,225 +1,313 @@
-import express from "express";
-import mongoose from "mongoose";
-import path from "path";
-import { fileURLToPath } from "url";
-import dotenv from "dotenv";
-import session from "express-session";
-import MongoStore from "connect-mongo";
+"use strict";
+
+const express = require("express");
+const mongoose = require("mongoose");
+const dotenv = require("dotenv");
+const path = require("path");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 
 dotenv.config();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+const USE_MEMORY = String(process.env.USE_MEMORY || "0") === "1";
+const MONGODB_URI =
+  process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/minijobs";
+const JWT_SECRET = process.env.JWT_SECRET || "devsecret-change-me";
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ----- Mongo -----
-await mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 5000,
-});
+// serve /public
+app.use(express.static(path.join(__dirname, "public")));
 
-// ----- Schemas -----
-const UserSchema = new mongoose.Schema(
-  {
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
+// ---- Templates ----
+const TPL = (name) => path.join(__dirname, "public", "templates", name);
+app.get("/", (_req, res) => res.redirect("/internships"));
+app.get("/login", (_req, res) => res.sendFile(TPL("login.html")));
+app.get("/signup", (_req, res) => res.sendFile(TPL("signup.html")));
+app.get("/internships", (_req, res) => res.sendFile(TPL("internships.html")));
+
+// ----------------- Models / Memory Stores -----------------
+let Internship, User;
+let memoryJobs = []; // { _id,title,company,role,createdAt,postedBy:{userId,email}, applicants:[{userId,email,appliedAt}] }
+let memoryUsers = [];
+
+if (USE_MEMORY) {
+  console.log("⚠️  MEMORY MODE: data resets on restart.");
+} else {
+  mongoose
+    .connect(MONGODB_URI)
+    .then(() => console.log("✅ MongoDB connected"))
+    .catch((err) => {
+      console.error("❌ MongoDB error:", err.message);
+      process.exit(1);
+    });
+
+  const InternshipSchema = new mongoose.Schema(
+    {
+      title: String,
+      company: String,
+      role: String,
+      postedBy: {
+        userId: String,
+        email: String,
+      },
+      applicants: [
+        {
+          userId: String,
+          email: String,
+          appliedAt: Date,
+        },
+      ],
     },
-    passwordHash: { type: String, required: true },
-    role: { type: String, enum: ["poster", "seeker"], required: true },
-  },
-  { timestamps: true }
-);
-const User = mongoose.model("User", UserSchema);
+    { timestamps: true }
+  );
+  Internship = mongoose.model("Internship", InternshipSchema);
 
-const InternshipSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true, trim: true },
-    company: { type: String, required: true, trim: true },
-    role: { type: String, required: true, trim: true },
-    postedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    }, // poster id
-  },
-  { timestamps: true }
-);
-const Internship = mongoose.model("Internship", InternshipSchema);
-
-const ApplicationSchema = new mongoose.Schema(
-  {
-    internship: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Internship",
-      required: true,
+  const UserSchema = new mongoose.Schema(
+    {
+      email: { type: String, required: true, unique: true },
+      passwordHash: { type: String, required: true },
+      role: { type: String, enum: ["employer", "seeker"], default: "seeker" },
     },
-    seeker: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
-  },
-  { timestamps: true }
-);
-// prevent duplicate applications by same seeker to same internship
-ApplicationSchema.index({ internship: 1, seeker: 1 }, { unique: true });
-const Application = mongoose.model("Application", ApplicationSchema);
+    { timestamps: true }
+  );
+  User = mongoose.model("User", UserSchema);
+}
 
-// ----- Sessions (NO JWT) -----
-app.set("trust proxy", 1);
-app.use(
-  session({
-    name: "sid",
-    secret: process.env.SESSION_SECRET || "change_me",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false, // set true behind HTTPS/proxy
-      maxAge: 1000 * 60 * 60 * 8, // 8 hours
-    },
-    store: MongoStore.create({
-      mongoUrl: process.env.MONGODB_URI,
-      ttl: 60 * 60 * 8,
-    }),
-  })
-);
-
-// ----- Auth helpers -----
-function requireLogin(req, res, next) {
-  if (!req.session.user)
-    return res.status(401).json({ error: "auth required" });
+// ----------------- Helpers -----------------
+function safeUser(u) {
+  return { id: u._id?.toString?.() || u.id, email: u.email, role: u.role };
+}
+function signToken(u) {
+  return jwt.sign(
+    { id: u._id?.toString?.() || u.id, role: u.role, email: u.email },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+function authRequired(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "Missing token" });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid/expired token" });
+  }
+}
+const requireRole = (role) => (req, res, next) => {
+  if (!req.user || req.user.role !== role)
+    return res.status(403).json({ error: "Forbidden: wrong role" });
+  next();
+};
+// optional auth (to show “applied” flag)
+function optionalAuth(req, _res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (token) {
+    try {
+      req.user = jwt.verify(token, JWT_SECRET);
+    } catch {
+      /* ignore */
+    }
+  }
   next();
 }
-function requireRole(role) {
-  return (req, res, next) => {
-    if (!req.session.user)
-      return res.status(401).json({ error: "auth required" });
-    if (req.session.user.role !== role)
-      return res.status(403).json({ error: `requires ${role}` });
-    next();
-  };
-}
 
-// ----- Auth routes -----
-app.post("/api/auth/register", async (req, res) => {
+// ----------------- Auth APIs -----------------
+app.post("/api/auth/signup", async (req, res) => {
   try {
-    const { email, password, role } = req.body || {};
-    if (!email || !password || !role || !["poster", "seeker"].includes(role))
-      return res
-        .status(400)
-        .json({ error: "email, password, role=poster|seeker required" });
+    let { email, password, role } = req.body || {};
+    if (!email || !password)
+      return res.status(400).json({ error: "email + password required" });
+    email = email.toLowerCase().trim();
+    role = role === "employer" ? "employer" : "seeker";
+
+    if (USE_MEMORY) {
+      if (memoryUsers.find((u) => u.email === email))
+        return res.status(409).json({ error: "already registered" });
+      const hash = await bcrypt.hash(password, 10);
+      const u = { id: Date.now().toString(), email, passwordHash: hash, role };
+      memoryUsers.push(u);
+      return res.json({ user: safeUser(u), token: signToken(u) });
+    }
 
     const exists = await User.findOne({ email });
-    if (exists)
-      return res.status(409).json({ error: "email already registered" });
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, passwordHash, role });
-
-    // login immediately
-    req.session.user = {
-      _id: user._id.toString(),
-      email: user.email,
-      role: user.role,
-    };
-    res.status(201).json(req.session.user);
-  } catch (e) {
-    res.status(500).json({ error: "registration failed" });
+    if (exists) return res.status(409).json({ error: "already registered" });
+    const hash = await bcrypt.hash(password, 10);
+    const u = await User.create({ email, passwordHash: hash, role });
+    return res.json({ user: safeUser(u), token: signToken(u) });
+  } catch {
+    res.status(500).json({ error: "server error" });
   }
 });
 
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password)
-    return res.status(400).json({ error: "email and password required" });
+  try {
+    let { email, password } = req.body || {};
+    if (!email || !password)
+      return res.status(400).json({ error: "email + password required" });
+    email = email.toLowerCase().trim();
 
-  const user = await User.findOne({ email });
-  if (!user) return res.status(401).json({ error: "invalid credentials" });
-
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return res.status(401).json({ error: "invalid credentials" });
-
-  req.session.user = {
-    _id: user._id.toString(),
-    email: user.email,
-    role: user.role,
-  };
-  res.json(req.session.user);
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("sid");
-    res.json({ ok: true });
-  });
-});
-
-app.get("/api/auth/me", (req, res) => {
-  res.json(req.session.user || null);
-});
-
-// ----- Internship routes -----
-app.get("/api/internships", async (req, res) => {
-  const items = await Internship.find()
-    .sort({ createdAt: -1 })
-    .populate("postedBy", "email role")
-    .lean();
-  res.json(items);
-});
-
-// CREATE (poster only)
-app.post("/api/internships", requireRole("poster"), async (req, res) => {
-  const { title, company, role } = req.body || {};
-  if (!title || !company || !role)
-    return res.status(400).json({ error: "title, company, role required" });
-
-  const job = await Internship.create({
-    title,
-    company,
-    role,
-    postedBy: req.session.user._id,
-  });
-  res.status(201).json(job);
-});
-
-// APPLY (seeker only)
-app.post(
-  "/api/internships/:id/apply",
-  requireRole("seeker"),
-  async (req, res) => {
-    try {
-      const internshipId = req.params.id;
-      const internship = await Internship.findById(internshipId);
-      if (!internship) return res.status(404).json({ error: "not found" });
-
-      const appDoc = await Application.create({
-        internship: internshipId,
-        seeker: req.session.user._id,
-      });
-      res.status(201).json({ ok: true, applicationId: appDoc._id });
-    } catch (e) {
-      // duplicate application
-      if (e.code === 11000)
-        return res.status(409).json({ error: "already applied" });
-      res.status(500).json({ error: "apply failed" });
+    if (USE_MEMORY) {
+      const u = memoryUsers.find((u) => u.email === email);
+      if (!u) return res.status(401).json({ error: "invalid credentials" });
+      const ok = await bcrypt.compare(password, u.passwordHash);
+      if (!ok) return res.status(401).json({ error: "invalid credentials" });
+      return res.json({ user: safeUser(u), token: signToken(u) });
     }
+
+    const u = await User.findOne({ email });
+    if (!u) return res.status(401).json({ error: "invalid credentials" });
+    const ok = await bcrypt.compare(password, u.passwordHash);
+    if (!ok) return res.status(401).json({ error: "invalid credentials" });
+    return res.json({ user: safeUser(u), token: signToken(u) });
+  } catch {
+    res.status(500).json({ error: "server error" });
+  }
+});
+
+// ----------------- Internship APIs -----------------
+
+// List jobs (newest first) + applicantCount + applied flag for seekers
+app.get("/api/internships", optionalAuth, async (req, res) => {
+  if (USE_MEMORY) {
+    const jobs = [...memoryJobs].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+    const mapped = jobs.map((j) => ({
+      ...j,
+      applicantCount: j.applicants?.length || 0,
+      applied:
+        req.user && req.user.role === "seeker"
+          ? (j.applicants || []).some((a) => a.userId === req.user.id)
+          : false,
+    }));
+    return res.json(mapped);
+  }
+
+  const jobs = await Internship.find().sort({ createdAt: -1 });
+  const mapped = jobs.map((j) => {
+    const jj = j.toObject();
+    return {
+      ...jj,
+      applicantCount: (jj.applicants || []).length,
+      applied:
+        req.user && req.user.role === "seeker"
+          ? (jj.applicants || []).some((a) => a.userId === req.user.id)
+          : false,
+    };
+  });
+  res.json(mapped);
+});
+
+// Post a job (employer only) — now records poster
+app.post(
+  "/api/internships",
+  authRequired,
+  requireRole("employer"),
+  async (req, res) => {
+    const { title, company, role } = req.body || {};
+    if (!title || !company || !role)
+      return res.status(400).json({ error: "all fields required" });
+
+    if (USE_MEMORY) {
+      const job = {
+        _id: Date.now().toString(),
+        title,
+        company,
+        role,
+        createdAt: new Date().toISOString(),
+        postedBy: { userId: req.user.id, email: req.user.email },
+        applicants: [],
+      };
+      memoryJobs.unshift(job);
+      return res.status(201).json(job);
+    }
+
+    const job = await Internship.create({
+      title,
+      company,
+      role,
+      postedBy: { userId: req.user.id, email: req.user.email },
+      applicants: [],
+    });
+    res.status(201).json(job);
   }
 );
 
-// ----- Static client -----
-app.use(express.static(path.join(__dirname, "public")));
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
+// Apply to a job (seeker only)
+app.post(
+  "/api/internships/:id/apply",
+  authRequired,
+  requireRole("seeker"),
+  async (req, res) => {
+    const jobId = req.params.id;
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Mini Job Board (MERN + Sessions) http://localhost:${PORT}`)
+    if (USE_MEMORY) {
+      const job = memoryJobs.find((j) => j._id == jobId);
+      if (!job) return res.status(404).json({ error: "job not found" });
+      job.applicants = job.applicants || [];
+      if (job.applicants.some((a) => a.userId === req.user.id)) {
+        return res.status(409).json({ error: "already applied" });
+      }
+      job.applicants.push({
+        userId: req.user.id,
+        email: req.user.email,
+        appliedAt: new Date().toISOString(),
+      });
+      return res.json({ ok: true });
+    }
+
+    const job = await Internship.findById(jobId);
+    if (!job) return res.status(404).json({ error: "job not found" });
+    job.applicants = job.applicants || [];
+    if (job.applicants.some((a) => a.userId === req.user.id)) {
+      return res.status(409).json({ error: "already applied" });
+    }
+    job.applicants.push({
+      userId: req.user.id,
+      email: req.user.email,
+      appliedAt: new Date(),
+    });
+    await job.save();
+    res.json({ ok: true });
+  }
 );
+
+// View applicants (ONLY the posting employer)
+app.get(
+  "/api/internships/:id/applicants",
+  authRequired,
+  requireRole("employer"),
+  async (req, res) => {
+    const jobId = req.params.id;
+
+    if (USE_MEMORY) {
+      const job = memoryJobs.find((j) => j._id == jobId);
+      if (!job) return res.status(404).json({ error: "job not found" });
+      if (!job.postedBy || job.postedBy.userId !== req.user.id) {
+        return res
+          .status(403)
+          .json({ error: "only the poster can view applicants" });
+      }
+      return res.json(job.applicants || []);
+    }
+
+    const job = await Internship.findById(jobId);
+    if (!job) return res.status(404).json({ error: "job not found" });
+    const postedById = job.postedBy?.userId;
+    if (!postedById || postedById !== req.user.id) {
+      return res
+        .status(403)
+        .json({ error: "only the poster can view applicants" });
+    }
+    res.json(job.applicants || []);
+  }
+);
+
+app.listen(PORT, () => console.log(`🚀 Running on http://localhost:${PORT}`));
