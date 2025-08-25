@@ -23,7 +23,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---- Templates ----
-const TPL = (name) => path.join(__dirname, "public", "templates", name);
+const TPL = (name) => path.join(__dirname, "public", name);
 app.get("/", (_req, res) => res.redirect("/internships"));
 app.get("/login", (_req, res) => res.sendFile(TPL("login.html")));
 app.get("/signup", (_req, res) => res.sendFile(TPL("signup.html")));
@@ -311,3 +311,4 @@ app.get(
 );
 
 app.listen(PORT, () => console.log(`🚀 Running on http://localhost:${PORT}`));
+
